@@ -73,7 +73,7 @@ function elementBody(html, openingTag) {
 // ---------- 卡片解析 ----------
 function gridSlices(html, allGrids) {
     // .hg-card-grid 區塊；allGrids=true 取全部，否則只取第一個（主列表）
-    const re = /<div\s+class="[^"]*\bhg-card-grid\b[^"]*"[^>]*>/g
+    const re = /<div\b[^>]*class="[^"]*\bhg-card-grid\b[^"]*"[^>]*>/g
     const starts = []
     let m
     while ((m = re.exec(html)) !== null) starts.push(m.index + m[0].length)
@@ -87,7 +87,7 @@ function gridSlices(html, allGrids) {
     return slices
 }
 function cardBlocks(slice) {
-    const re = /<div\s+class="[^"]*\bhg-drama-card\b[^"]*"[^>]*>/g
+    const re = /<div\b[^>]*class="[^"]*\bhg-drama-card\b[^"]*"[^>]*>/g
     const starts = []
     let m
     while ((m = re.exec(slice)) !== null) starts.push(m.index + m[0].length)
@@ -104,8 +104,8 @@ function parseCardBlock(block) {
     const vid = a[1]
     const imgM = block.match(/data-src="([^"]+)"/) || block.match(/src="([^"]+)"/)
     let title = ''
-    const t = block.match(/hg-drama-card__title[^>]*>([\s\S]*?)<\/a>/)
-    if (t) title = stripTags(t[1])
+    const t = block.match(/<([a-z][\w-]*)\b[^>]*class="[^"]*\bhg-drama-card__title\b[^"]*"[^>]*>([\s\S]*?)<\/\1>/i)
+    if (t) title = stripTags(t[2])
     if (!title) {
         const tt = block.match(/<a[^>]+href="[^"]*\/detail\/\d+\/"[^>]*>([\s\S]*?)<\/a>/)
         if (tt) title = stripTags(tt[1])
@@ -143,13 +143,44 @@ function parseGridCards(html, allGrids) {
     }
     return list
 }
+function parseLinkCards(html) {
+    const list = []
+    const seen = {}
+    const re = /<a\b[^>]*href=["'][^"']*\/detail\/(\d+)\/[^"']*["'][^>]*>[\s\S]*?<\/a>/gi
+    let m
+    while ((m = re.exec(html)) !== null) {
+        const id = m[1]
+        if (seen[id]) continue
+        const tag = m[0]
+        let title = stripTags(tag)
+        if (!title) {
+            const attr = tag.match(/\b(?:title|alt)=["']([^"']+)["']/i)
+            title = attr ? decodeHtml(attr[1]).trim() : ''
+        }
+        if (!title || title.length > 80) continue
+        const img = tag.match(/\b(?:data-src|src)=["']([^"']+)["']/i)
+        list.push({ vod_id: id, vod_name: title, vod_pic: imgSrc(img ? img[1] : ''), vod_remarks: '', ext: { id: id } })
+        seen[id] = true
+    }
+    return list
+}
+function diagnosticCard(message) {
+    return { vod_id: 'diagnostic', vod_name: '黄果抓取诊断：' + String(message).slice(0, 100), vod_pic: '', vod_remarks: '请把这条文字发给我', ext: { id: 'diagnostic' } }
+}
+function cardsOrDiagnostic(html, primary) {
+    const list = primary.length ? primary : parseLinkCards(html)
+    if (list.length) return list
+    const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [,''])[1]
+    const detailCount = (html.match(/\/detail\/\d+\//g) || []).length
+    return [diagnosticCard('页面长度=' + html.length + '；详情链接=' + detailCount + '；标题=' + stripTags(title).slice(0, 30))]
+}
 // ---------- 排行榜解析 ----------
 function parseRanks(html) {
     if (!html) return []
-    const listM = html.match(/<div\s+class="[^"]*\bhg-rank-list\b[^"]*"[^>]*>/)
+    const listM = html.match(/<div\b[^>]*class="[^"]*\bhg-rank-list\b[^"]*"[^>]*>/)
     const from = listM ? listM.index + listM[0].length : 0
     const slice = html.slice(from)
-    const re = /<div\s+class="[^"]*\bhg-rank-item\b[^"]*"[^>]*>/g
+    const re = /<div\b[^>]*class="[^"]*\bhg-rank-item\b[^"]*"[^>]*>/g
     const starts = []
     let m
     while ((m = re.exec(slice)) !== null) starts.push(m.index + m[0].length)
@@ -164,8 +195,8 @@ function parseRanks(html) {
             seen[a[1]] = true
             const imgM = block.match(/data-src="([^"]+)"/) || block.match(/src="([^"]+)"/)
             let title = ''
-            const t = block.match(/hg-rank-item__title[^>]*>([\s\S]*?)<\/h2>/)
-            if (t) title = stripTags(t[1])
+            const t = block.match(/<([a-z][\w-]*)\b[^>]*class="[^"]*\bhg-rank-item__title\b[^"]*"[^>]*>([\s\S]*?)<\/\1>/i)
+            if (t) title = stripTags(t[2])
             if (!title) {
                 const tt = block.match(/<a[^>]+href="[^"]*\/detail\/\d+\/"[^>]*>([\s\S]*?)<\/a>/)
                 if (tt) title = stripTags(tt[1])
@@ -185,12 +216,12 @@ function parseRanks(html) {
 }
 // ---------- 介面 ----------
 async function getLocalInfo() {
-    return jsonify({ ver: 1, name: '黄果短剧', api: 'csp_huangguo', type: 3 })
+    return jsonify({ ver: 2, name: '黄果短剧', api: 'csp_huangguo', type: 3 })
 }
 
 async function getConfig() {
     return jsonify({
-        ver: 1,
+        ver: 2,
         title: '黄果短剧',
         site: SITE,
         tabs: TABS.map((t) => ({ name: t.name, ext: { id: t.id } })),
@@ -203,17 +234,17 @@ async function getCards(ext) {
     try {
         if (id === 'home') {
             const html = await fetchHtml(SITE + '/')
-            return jsonify({ list: parseGridCards(html, true), page: page })
+            return jsonify({ list: cardsOrDiagnostic(html, parseGridCards(html, true)), page: page })
         }
         const url = SITE + '/' + id + '/' + (page > 1 ? page + '/' : '')
         const html = await fetchHtml(url)
         if (id.indexOf('rank') !== -1) {
-            return jsonify({ list: parseRanks(html), page: page })
+            return jsonify({ list: cardsOrDiagnostic(html, parseRanks(html)), page: page })
         }
-        return jsonify({ list: parseGridCards(html, false), page: page })
+        return jsonify({ list: cardsOrDiagnostic(html, parseGridCards(html, false)), page: page })
     } catch (e) {
         console.error('getCards error:', e)
-        return jsonify({ list: [], page: page })
+        return jsonify({ list: [diagnosticCard('请求失败：' + (e && e.message || e))], page: page })
     }
 }
 async function getTracks(ext) {
@@ -292,9 +323,9 @@ async function search(ext) {
     if (!kw) return jsonify({ list: [], page: 1 })
     try {
         const html = await fetchHtml(SITE + '/search/video/' + encodeURIComponent(kw) + '/')
-        return jsonify({ list: parseGridCards(html, false), page: 1 })
+        return jsonify({ list: cardsOrDiagnostic(html, parseGridCards(html, false)), page: 1 })
     } catch (e) {
         console.error('search error:', e)
-        return jsonify({ list: [], page: 1 })
+        return jsonify({ list: [diagnosticCard('搜索失败：' + (e && e.message || e))], page: 1 })
     }
 }
