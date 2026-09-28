@@ -52,13 +52,14 @@
 
 const UA =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-const SITE = 'https://huangguoai.com'
+let SITE = 'https://huangguoai.com'
+let SITE_READY = false
 
 const HEADERS = {
     'User-Agent': UA,
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9',
-    Referer: SITE + '/',
+    Referer: 'https://huangguoai.com/',
 }
 
 const TABS = [
@@ -90,10 +91,68 @@ function stripTags(s) {
 }
 
 async function fetchHtml(url, referer) {
-    const headers = referer ? Object.assign({}, HEADERS, { Referer: referer }) : HEADERS
+    const headers = Object.assign({}, HEADERS, { Referer: referer || SITE + '/' })
     const resp = await $fetch.get(url, { headers })
     const data = resp && resp.data
     return typeof data === 'string' ? data : data == null ? '' : JSON.stringify(data)
+}
+
+// 动态发现当前可用主站。发布页会频繁更换线路，所以不再依赖固定 huangguoai.com。
+async function ensureSite() {
+    if (SITE_READY) return SITE
+    const candidates = []
+    const add = (u) => {
+        u = String(u || '').replace(/&amp;/g, '&').trim()
+        if (!u) return
+        if (u.indexOf('//') === 0) u = 'https:' + u
+        if (u.indexOf('http') !== 0) u = 'https://' + u
+        const m = u.match(/^https?:\/\/[^\/"'<>\s]+/i)
+        if (!m) return
+        const base = m[0].replace(/\/$/, '')
+        if (candidates.indexOf(base) === -1) candidates.push(base)
+    }
+
+    // 先读取两个发布页，提取它们实时公布的入口。
+    for (const pub of ['https://huangguoai.ai/', 'https://huangguoai.pages.dev/']) {
+        try {
+            const html = await fetchHtml(pub, pub)
+            let m
+            const hrefRe = /href=["'](https?:\/\/[^"'<>\s]+)["']/gi
+            while ((m = hrefRe.exec(html)) !== null) add(m[1])
+            const domainRe = /(?:https?:\/\/)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)/gi
+            while ((m = domainRe.exec(html)) !== null) {
+                const d = m[1].toLowerCase()
+                if (!/(twitter|x\.com|telegram|t\.me|github|pages\.dev|google|cloudflare)/i.test(d)) add(d)
+            }
+        } catch (e) {
+            console.error('publisher fetch failed:', pub, e)
+        }
+    }
+
+    // 发布页不可用时的后备候选。
+    ;[
+        'https://qkmc5d.fejivxks.cc',
+        'https://quza.fejivxks.cc',
+        'https://wh8s.fejivxks.cc',
+        'https://huangguoai.com'
+    ].forEach(add)
+
+    for (const base of candidates) {
+        try {
+            const html = await fetchHtml(base + '/', base + '/')
+            // 只接受看起来确实是黄果内容站的页面，避免误选导航/社交链接。
+            if (/hg-card-grid|hg-drama-card|\/detail\/\d+\//i.test(html)) {
+                SITE = base
+                SITE_READY = true
+                console.log('[huangguo] active site:', SITE)
+                return SITE
+            }
+        } catch (e) {
+            console.error('[huangguo] candidate failed:', base)
+        }
+    }
+    console.error('[huangguo] no active site found')
+    return SITE
 }
 
 // ---------- 卡片解析 ----------
@@ -220,6 +279,7 @@ async function getLocalInfo() {
 }
 
 async function getConfig() {
+    try { await ensureSite() } catch (e) {}
     return jsonify({
         ver: 1,
         title: '黄果短剧',
@@ -233,6 +293,7 @@ async function getCards(ext) {
     const id = String(ext.id || 'home').replace(/^\//, '')
     const page = Math.max(1, parseInt(ext.page) || 1)
     try {
+        await ensureSite()
         if (id === 'home') {
             const html = await fetchHtml(SITE + '/')
             return jsonify({ list: parseGridCards(html, true), page: page })
@@ -254,6 +315,7 @@ async function getTracks(ext) {
     const id = ext.id || ''
     if (!id) return jsonify({ list: [] })
     try {
+        await ensureSite()
         const html = await fetchHtml(SITE + '/detail/' + id + '/')
         const tracks = []
         const gridM = html.match(/<div\s+class="[^"]*\bhg-web-detail__ep-grid\b[^"]*"[^>]*>([\s\S]*?)<\/div>/)
@@ -291,6 +353,7 @@ async function getPlayinfo(ext) {
     const ep = String(ext.ep || '1')
     if (!url) return jsonify({ urls: [] })
     try {
+        await ensureSite()
         const html = await fetchHtml(url, SITE)
         let play = ''
         const m = html.match(/id="videoInitialData"[^>]*>([\s\S]*?)<\/script>/)
@@ -324,6 +387,7 @@ async function search(ext) {
     const kw = String(ext.text || ext.wd || '').trim()
     if (!kw) return jsonify({ list: [], page: 1 })
     try {
+        await ensureSite()
         const html = await fetchHtml(SITE + '/search/video/' + encodeURIComponent(kw) + '/')
         return jsonify({ list: parseGridCards(html, false), page: 1 })
     } catch (e) {
